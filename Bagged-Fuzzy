@@ -1,0 +1,152 @@
+#excel packages 
+install.packages("xlsx")
+library("xlsx")
+
+#read data
+#The features in the dataset are as follows:parent protein id, protein sequence, 
+#peptide start position, peptide end position, peptide sequence, chou fasman, emini,
+#kolaskar tongaonkar, parker, isoelectric point, aromaticity, hydrophobicity, stability and target
+setwd("/SarsTrainTest")
+sars <- read.csv(file = '/input_sars.csv', stringsAsFactors = TRUE)
+
+#protein and peptide sequences, peptide start and end positions, paretn protein id features
+#are removed. Data contains different peptides of the same protein. Isoelectric point, 
+#aromaticity, hydrophobicity and stability features are protein-based features. Since it is 
+#a single protein, these properties take the same value for all samples. Therefore these
+#features also removed
+dataSars <- sars[ -c(1,2,3,4,5,10,11,12,13)]
+
+#peptid sequence length is added as a new column
+newF<-t(sars[,4]-sars[,3]+1)
+peptid_length<-t(newF)
+dataSars<-cbind(peptid_length, dataSars)
+
+#target column is label feature. 0 (non-epitope) and 1 (epitope). 
+#0 values made 2 because fuzzy methods do not accept 0 as a label value
+dataSars$target[dataSars$target==0] <- 2
+
+#For subsampling, the data is parsed by class.
+class1<-dataSars[dataSars[, "target"] == 1,]
+class2<-dataSars[dataSars[, "target"] == 2,]
+
+#The data is shuffled to randomly select samples.
+set.seed(2)
+class1Shuffled <- class1[sample(nrow(class1)),]
+class2Shuffled <- class2[sample(nrow(class2)),]
+
+#TrainSize samples from each class are taken to the training set. Remaining samples are
+#used for testing
+TrainSize=120
+train<-rbind(class1Shuffled[1:TrainSize,], class2Shuffled[1:TrainSize,],deparse.level = 0)
+TestSize=20
+test<-rbind(class1Shuffled[(TrainSize+1):nrow(class1),], class2Shuffled[(TrainSize+1):(TrainSize+TestSize),],deparse.level = 0)
+
+#target value is removed from the test set
+real.val <- matrix(test[,6], ncol = 1)
+test <- test[ -c(6)]
+
+#The min and max values of the features that fuzzy methods need to create rules are determined.
+range.data<-matrix(c(5, 393, 0.621, 1.317, 0, 40.605, 0.908, 1.228, -7.467, 4.907), nrow=2) 
+
+#package for Fuzzy methods
+library("frbs")
+
+#Models are trained with GCCL, W, CHI, GBML and SLAVE fuzzy methods seperately, 
+#and predictions are made with the test set.
+method.type <- "GFS.GCCL" 
+control <- list(popu.size = 30, num.class = 2, num.labels = 9, persen_cross = 0.8, 
+                max.gen = 150, persen_mutant = 0.4)
+
+objectGCCL <- frbs.learn(train, range.data, method.type, control)
+pred.valGCCL <- predict(objectGCCL, test)
+errGCCL = 100*sum(real.val!=pred.valGCCL)/nrow(real.val)
+
+
+#FRBCS.W, Fuzzy Rule-Based classification System with weight factor
+method.type <- "FRBCS.W"
+control <- list(num.labels = 11, type.mf = "GAUSSIAN", type.tnorm = "MIN", 
+                type.snorm = "SUM", type.implication.func = "DIENES_RESHER")
+
+objectW <- frbs.learn(train, range.data, method.type, control)
+pred.valW <- predict(objectW, test)
+errW = 100*sum(real.val!=pred.valW)/nrow(real.val)
+
+#FRBCS.CHI, Fuzzy Rule Based Classification Using Chi's Technique
+method.type <- "FRBCS.CHI"
+control <- list(num.labels = 5, type.mf = "TRIANGLE", type.tnorm = "MIN", type.snorm = "MAX", 
+                type.implication.func = "ZADEH") 
+
+objectCHI <- frbs.learn(train, range.data, method.type, control)
+pred.valCHI <- predict(objectCHI, test)
+errCHI = 100*sum(real.val!=pred.valCHI)/nrow(real.val)
+
+#FH.GBML, Ishibuchi's method based on hybridization of GFS.GCCL and the Pittsburg approach
+method.type <- "FH.GBML" 
+control <- list(popu.size = 10, max.num.rule = 50, num.class = 2, persen_cross = 0.9, 
+                max.gen = 10, persen_mutant =0.2, p.dcare = 0.5, p.gccl = 0.4)
+
+objectGBML <- frbs.learn(train, range.data, method.type, control)
+pred.valGBML <- predict(objectGBML, test)
+errGBML = 100*sum(real.val!=pred.valGBML)/nrow(real.val)
+
+#SLAVE 
+method.type <- "SLAVE" 
+control <- list(num.class = 2, num.labels = 7, persen_cross = 0.8, max.iter = 30, max.gen = 40, 
+                persen_mutant = 0.4, k.lower = 0, k.upper = 1, epsilon = 0.8)
+
+objectSLAVE <- frbs.learn(train, range.data, method.type, control)
+pred.valSLAVE <- predict(objectSLAVE, test)
+errSLAVE = 100*sum(real.val!=pred.valSLAVE)/nrow(real.val)
+
+#Individual decisions of the models are combined in a table. Each column in this table 
+#contains the predictions of a model for the test set.
+decisions<-cbind(pred.valGCCL, pred.valW, pred.valCHI, pred.valGBML, pred.valSLAVE)
+
+#majority voting
+majVoting<-integer(40)
+for (i in c(1:40))
+{
+  majVoting[i]=sum(decisions[i,1:5])
+  if (majVoting[i]>7)
+    majVoting[i]<-2
+  else
+    majVoting[i]<-1
+}
+errMajVoting = 100*sum(real.val!=majVoting)/nrow(real.val)
+
+#covid data is imported
+covid <- read.csv(file = '/input_covid.csv', stringsAsFactors = TRUE)
+
+#The data editing steps applied for sars data are also repeated for covid data.
+newF<-t(covid[,4]-covid[,3]+1)
+peptid_length<-t(newF)
+covid<-cbind(peptid_length, covid)
+
+covid <- covid[ -c(2,3,4,5,6,11,12,13,14)]
+range.data<-matrix(c(5,20,0.596,1.538,0.003,18.298,0.837,1.282,-7.317,7.3), nrow=2)
+
+#The models that have been successful for sars are applied to the covid data and 
+#predictions are made.
+pred.valSLAVECovid <- predict(objectSLAVE, covid)
+pred.valCHICovid <- predict(objectCHI, covid)
+pred.valGBMLCovid <- predict(objectGBML, covid)
+pred.valGCCLCovid <- predict(objectGCCL, covid)
+pred.valWCovid <- predict(objectW, covid)
+
+#Predictions are combined in a table.
+covidDecisions<-(cbind(pred.valSLAVECovid, pred.valCHICovid, pred.valGBMLCovid, pred.valGCCLCovid, pred.valWCovid))
+covidMajVoting<-integer(20312)
+for (i in c(1:20312))
+{
+  covidMajVoting[i]=sum(covidDecisions[i,1:5])
+  if (covidMajVoting[i]>7)
+    covidMajVoting[i]<-2
+  else
+    covidMajVoting[i]<-1
+}
+
+#final predictions for one train-test set are saved.
+write.xlsx(covidMajVoting, '/covidPred1.xlsx', sheetName = "Sheet3", 
+           col.names = TRUE, row.names = TRUE, append = FALSE)
+
+#All of these processes repeated 6 times with randomly generated train and test sets
